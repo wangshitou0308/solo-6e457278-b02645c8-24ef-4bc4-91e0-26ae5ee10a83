@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>书帖结构复原台 · 离线版</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ===================== 顶栏 ===================== -->
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-mark">卷</span>
+    <div>
+      <h1>书帖结构复原台</h1>
+      <span class="sub">古籍修复 · 手稿编目 · 离线作业</span>
+    </div>
+  </div>
+
+  <div class="hypo-box">
+    <label>当前假设</label>
+    <select id="hypoSelect" title="切换复原假设"></select>
+    <input id="hypoName" type="text" placeholder="假设名称">
+    <button id="btnSave" class="btn" title="保存当前假设到本地数据库 (Ctrl+S)">保存</button>
+    <button id="btnNew" class="btn ghost" title="另存为新假设">另存为</button>
+  </div>
+
+  <div class="top-actions">
+    <button id="btnUndo" class="btn ghost" title="撤销 (Ctrl+Z)">↶ 撤销</button>
+    <button id="btnRedo" class="btn ghost" title="重做 (Ctrl+Y)">↷ 重做</button>
+    <span class="divider"></span>
+    <button id="btnCompare" class="btn ghost" title="比较两个已保存假设">⇄ 比较</button>
+    <button id="btnExport" class="btn ghost" title="导出 JSON">导出</button>
+    <button id="btnImport" class="btn ghost" title="导入 JSON">导入</button>
+    <button id="btnPrint" class="btn ghost" title="生成打印图">打印图</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
+  </div>
+</header>
+
+<div id="dirtyLine" class="dirty-line hidden">● 有未保存修改</div>
+
+<!-- ===================== 主工作区 ===================== -->
+<main id="workspace">
+
+  <!-- 左：工具箱 + 候选 -->
+  <aside id="leftPanel" class="panel">
+    <section class="tool-card">
+      <h2>添加叶件</h2>
+      <p class="hint">点击添加，或直接拖入书帖 / 叶序带。</p>
+      <div class="tool-grid">
+        <button class="tool-btn" draggable="true" data-new="bifolio">
+          <span class="tb-ico">▭▭</span><b>双叶</b><small>bifolio</small>
+        </button>
+        <button class="tool-btn" draggable="true" data-new="single">
+          <span class="tb-ico">▭</span><b>单叶</b><small>single</small>
+        </button>
+        <button class="tool-btn" draggable="true" data-new="frag">
+          <span class="tb-ico">◸</span><b>残片</b><small>fragment</small>
+        </button>
+        <button id="btnAddQuire" class="tool-btn quire">
+          <span class="tb-ico">▤</span><b>新书帖</b><small>quire</small>
+        </button>
+      </div>
+    </section>
+
+    <section class="tool-card">
+      <h2>待编叶件 <span id="unplacedCount" class="badge">0</span></h2>
+      <p class="hint">未归入任何书帖的叶件（含待定残片）。</p>
+      <div id="tray" class="tray"></div>
+    </section>
+
+    <section class="tool-card">
+      <h2>候选位置</h2>
+      <p class="hint">选中残片后，按现有约束筛出的可放置位置；证据不足时并列保留，不自动定案。</p>
+      <div id="candidateBox" class="candidate-box">
+        <span class="muted">请选中一片残片…</span>
+      </div>
+    </section>
+
+    <section class="tool-card">
+      <h2>操作模式</h2>
+      <div class="mode-row">
+        <label class="switch"><input type="checkbox" id="lockMode"><span>只重排存疑项</span></label>
+        <small class="hint" id="lockHint">已确认（✓）书帖/叶件将被锁定，移动与编辑被禁止。</small>
+      </div>
+      <div class="mode-row">
+        <button id="btnMerge" class="btn ghost small">合帖模式</button>
+        <button id="btnSplitMode" class="btn ghost small">拆帖模式</button>
+      </div>
+      <div id="modeMsg" class="mode-msg"></div>
+    </section>
+  </aside>
+
+  <!-- 中：剖面图 + 叶序带 + 书帖卡 -->
+  <section id="centerPanel" class="panel center">
+    <div class="view-toggle">
+      <div class="legend-inline" id="legendInline"></div>
+      <div class="view-tabs">
+        <button class="vtab active" data-view="all">全部</button>
+        <button class="vtab" data-view="section">嵌套剖面</button>
+        <button class="vtab" data-view="strip">叶序带</button>
+        <button class="vtab" data-view="cards">书帖卡</button>
+      </div>
+    </div>
+
+    <div id="sectionWrap" class="canvas-wrap">
+      <div class="canvas-title">
+        <h2>嵌套剖面（书脊纵剖）</h2>
+        <span class="hint">同色弧线 = 同一双叶；弧线在书脊处相套即嵌套关系</span>
+      </div>
+      <div id="sectionView" class="scroll-x"></div>
+    </div>
+
+    <div id="stripWrap" class="canvas-wrap">
+      <div class="canvas-title">
+        <h2>叶序带（装订顺序）</h2>
+        <span class="hint">拖叶块换位；落在缝上可拆帖；两帖之间可合帖</span>
+      </div>
+      <div id="stripView" class="strip-scroll"></div>
+    </div>
+
+    <div id="cardsWrap" class="canvas-wrap cards">
+      <div class="canvas-title"><h2>书帖卡</h2>
+        <span class="hint">一张卡 = 一帖；点选叶件编辑，点 × 移回待编区</span>
+      </div>
+      <div id="cardsView" class="cards-grid"></div>
+    </div>
+  </section>
+
+  <!-- 右：详情 / 问题 / 假设 -->
+  <aside id="rightPanel" class="panel">
+    <div class="right-tabs">
+      <button class="rtab active" data-tab="detail">详情</button>
+      <button class="rtab" data-tab="issues">校验 <span id="issueCount" class="badge red">0</span></button>
+      <button class="rtab" data-tab="hypos">假设</button>
+    </div>
+
+    <div class="tabpane active" id="tab-detail">
+      <div id="detailBox"><p class="muted">点选任一叶件 / 双叶 / 书帖查看详情。</p></div>
+    </div>
+
+    <div class="tabpane" id="tab-issues">
+      <div id="issueFilters" class="issue-filters"></div>
+      <div id="issuesBox"></div>
+    </div>
+
+    <div class="tabpane" id="tab-hypos">
+      <div class="hypo-manage">
+        <button id="btnRefreshHypos" class="btn small">刷新列表</button>
+        <button id="btnCompare2" class="btn small">比较所选两帖…</button>
+        <button id="btnDeleteHypo" class="btn small danger">删除所选</button>
+      </div>
+      <div id="hyposList" class="hypos-list"></div>
+    </div>
+  </aside>
+</main>
+
+<!-- ===================== 弹窗：比较 ===================== -->
+<div id="compareModal" class="modal hidden">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h2>假设比较</h2>
+      <button class="modal-x" data-close>×</button>
+    </div>
+    <div class="modal-body">
+      <div class="cmp-pickers">
+        <label>A：<select id="cmpA"></select></label>
+        <label>B：<select id="cmpB"></select></label>
+      </div>
+      <div id="cmpResult"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 弹窗：打印 ===================== -->
+<div id="printModal" class="modal hidden">
+  <div class="modal-box wide print-box">
+    <div class="modal-head">
+      <h2>打印预览</h2>
+      <div>
+        <button id="btnDoPrint" class="btn">打印 / 存 PDF</button>
+        <button class="modal-x btn ghost" data-close>关闭</button>
+      </div>
+    </div>
+    <div class="modal-body" id="printBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
