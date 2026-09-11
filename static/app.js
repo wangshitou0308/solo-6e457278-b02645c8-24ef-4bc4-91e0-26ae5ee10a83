@@ -4,8 +4,8 @@
 "use strict";
 
 /* ---------------- 小工具 ---------------- */
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => [...(r || document).querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -98,6 +98,10 @@ function redo() {
   state.doc = s.doc;
   afterStructural("已重做：" + s.label);
 }
+function syncUndoButtons() {
+  $("#btnUndo").disabled = undoStack.length === 0;
+  $("#btnRedo").disabled = redoStack.length === 0;
+}
 
 /* ---------------- 文档结构 ---------------- */
 function blankDocument(title) {
@@ -153,8 +157,7 @@ function commit(label, fn) {
 function markDirty() {
   state.dirty = true;
   $("#dirtyLine").classList.remove("hidden");
-  $("#btnUndo").disabled = undoStack.length === 0;
-  $("#btnRedo").disabled = redoStack.length === 0;
+  syncUndoButtons();
 }
 function afterStructural(msg) {
   state.issues = validate(state.doc);
@@ -475,16 +478,21 @@ function validate(doc) {
       global.push({ lid, num: parseFolio(l.folio), raw: l.folio, q, pos });
     });
   }
-  const rawCount = new Map();
+  /* 重号按“数值等值”归组：阿拉伯数字与中文数字同值视为同一叶码
+     （「一」与「1」为重号）；无法解析出数值的叶码（空码、纯卷次标注等）不参与重号比对 */
+  const numGroups = new Map(); // num -> [{g}]
   global.forEach((g) => {
-    if (g.raw) rawCount.set(g.raw, (rawCount.get(g.raw) || 0) + 1);
+    if (g.num == null) return;
+    if (!numGroups.has(g.num)) numGroups.set(g.num, []);
+    numGroups.get(g.num).push(g);
   });
-  for (const [raw, c] of rawCount) {
-    if (c > 1) {
-      global.filter((g) => g.raw === raw).forEach((g) =>
-        add("dup", "重号：叶码「" + raw + "」出现 " + c + " 次", g.q.name + " · 第" + (g.pos + 1) + "位",
-          { qid: g.q.id, lid: g.lid }));
-    }
+  for (const [, gs] of numGroups) {
+    if (gs.length < 2) continue;
+    const rawForms = [...new Set(gs.map((g) => "「" + g.raw + "」"))];
+    gs.forEach((g) =>
+      add("dup", "重号：叶码 " + rawForms.join("、") + " 数值相同（= 第 " + numToDisplay(g.num) +
+        " 叶），共 " + gs.length + " 处", g.q.name + " · 第" + (g.pos + 1) + "位",
+        { qid: g.q.id, lid: g.lid }));
   }
   for (let i = 1; i < global.length; i++) {
     const a = global[i - 1], b = global[i];
@@ -535,26 +543,35 @@ function leafIssueLevel(lid) {
 function fragmentCandidates(fragId) {
   const frag = leafById(fragId);
   if (!frag) return [];
-  const baseKey = (x) => [x.type, x.sev, x.qid || "", x.lid || "", x.pid || "", x.msg].join("|");
-  const base = new Set(validate(state.doc).map(baseKey));
   const out = [];
+  let excluded = 0; // 被排除（会新增结构冲突）的落点计数
+
+  // 以「问题身份」（类型 + 涉及对象，不含位置文案——插入会改变层位/序号表述）
+  // 统计 err 级问题数量；插入后任何身份计数增加，都算该落点引入了新的结构冲突。
+  function errCounts(list) {
+    const m = new Map();
+    for (const x of list) {
+      if (x.sev !== "err") continue;
+      const k = [x.type, x.qid || "", x.lid || "", x.pid || ""].join("|");
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return m;
+  }
 
   function simulate(qId, index) {
     const d = clone(state.doc);
-    const fd = d.leaves.find((l) => l.id === fragId);
     d.quires.forEach((q) => (q.leaves = q.leaves.filter((x) => x !== fragId)));
-    const after = validate(d); // 先算“取出残片后”
-    const beforeKeys = new Set(after.map(baseKey));
+    const before = errCounts(validate(d)); // 先算“取出残片后”的基线
     if (qId) {
       const q = d.quires.find((q) => q.id === qId);
       q.leaves.splice(Math.min(index, q.leaves.length), 0, fragId);
     } else {
       d.quires.push({ id: "newq", name: "新帖", locked: false, leaves: [fragId] });
     }
-    const ins = validate(d);
-    const newErrs = ins.filter((x) => x.sev === "err" && !beforeKeys.has(baseKey(x)) &&
-      (x.lid === fragId || (!x.lid && (x.qid === qId))));
-    return newErrs;
+    const after = errCounts(validate(d));
+    let added = 0;
+    for (const [k, c] of after) added += Math.max(0, c - (before.get(k) || 0));
+    return added;
   }
 
   function justify(q, index) {
@@ -581,17 +598,17 @@ function fragmentCandidates(fragId) {
   for (const q of state.doc.quires) {
     if (state.lockMode && q.locked) continue; // 锁定帖不参与候选
     for (let i = 0; i <= q.leaves.length; i++) {
-      const errs = simulate(q.id, i);
-      if (errs.length === 0) {
-        const why = justify(q, i);
-        out.push({
-          qId: q.id, qName: q.name, index: i,
-          pos: i === 0 ? "帖首" : i === q.leaves.length ? "帖末（第" + i + "叶后）" : "第" + i + "叶与第" + (i + 1) + "叶之间",
-          why, weak: why.length === 0,
-        });
-      }
+      const added = simulate(q.id, i);
+      if (added > 0) { excluded++; continue; } // 该落点会新增结构冲突，排除
+      const why = justify(q, i);
+      out.push({
+        qId: q.id, qName: q.name, index: i,
+        pos: i === 0 ? "帖首" : i === q.leaves.length ? "帖末（第" + i + "叶后）" : "第" + i + "叶与第" + (i + 1) + "叶之间",
+        why, weak: why.length === 0,
+      });
     }
   }
+  out.excluded = excluded;
   // 新建书帖：单残片独立成帖，结构上是中缝单叶，恒可行但证据弱
   out.push({ qId: null, qName: "新建书帖", index: 0, pos: "独立成帖（中缝单叶 / 待以后配补）",
     why: frag.evidence.seam ? ["可另立护叶帖"] : [], weak: true, newQuire: true });
@@ -1043,7 +1060,9 @@ function renderCandidates() {
   const frag = leafById(sel.id);
   const cands = fragmentCandidates(frag.id);
   box.innerHTML = `<div style="font-size:11px;color:#6b6156;font-family:sans-serif;margin-bottom:4px">
-    ${esc(leafLabel(frag))}：共 ${cands.length} 个不冲突位置，并列保留，不自动定案</div>` +
+    ${esc(leafLabel(frag))}：共 ${cands.length} 个不冲突位置，并列保留，不自动定案${
+      cands.excluded ? `；已排除 <b style="color:#b3382c">${cands.excluded}</b> 个会新增嵌套/悬空/重号等冲突的落点（如帖首、帖缘）` : ""
+    }</div>` +
     cands.map((c, i) => `<div class="cand-item ${c.weak ? "weak" : ""}" data-ci="${i}">
       <b>${c.newQuire ? "✚ " : ""}${esc(c.qName)}</b> · ${esc(c.pos)}
       ${c.why.length ? `<div class="cand-why">证据支持：${c.why.map(esc).join("、")}</div>`
@@ -1266,6 +1285,7 @@ async function loadHypo(id) {
   undoStack.length = redoStack.length = 0;
   state.dirty = false;
   $("#dirtyLine").classList.add("hidden");
+  syncUndoButtons();
   state.issues = validate(state.doc);
   renderHypoUI();
   renderAll();
@@ -1533,10 +1553,17 @@ $("#btnDoPrint").onclick = () => window.print();
    ============================================================ */
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input,textarea,select")) return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    e.shiftKey ? redo() : undo();
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveCurrent(false); }
 });
+/* 顶栏按钮与快捷键执行同一对函数 */
+$("#btnUndo").addEventListener("click", undo);
+$("#btnRedo").addEventListener("click", redo);
+syncUndoButtons();
 
 /* ============================================================
    示例数据
