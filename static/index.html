@@ -133,6 +133,7 @@
     <div class="right-tabs">
       <button class="rtab active" data-tab="detail">详情</button>
       <button class="rtab" data-tab="issues">校验 <span id="issueCount" class="badge red">0</span></button>
+      <button class="rtab" data-tab="chain">证据链 <span id="chainCount" class="badge">0</span></button>
       <button class="rtab" data-tab="hypos">假设</button>
     </div>
 
@@ -143,6 +144,16 @@
     <div class="tabpane" id="tab-issues">
       <div id="issueFilters" class="issue-filters"></div>
       <div id="issuesBox"></div>
+    </div>
+
+    <div class="tabpane" id="tab-chain">
+      <div class="chain-toolbar">
+        <button id="btnAddEvidence" class="btn small">＋ 新证据</button>
+        <button id="btnGraphAll" class="btn small ghost">关系图（全部）</button>
+      </div>
+      <div id="chainConflictBox"></div>
+      <div id="chainList" class="chain-list"></div>
+      <div id="chainEditor" class="hidden"></div>
     </div>
 
     <div class="tabpane" id="tab-hypos">
@@ -184,6 +195,38 @@
       </div>
     </div>
     <div class="modal-body" id="printBody"></div>
+  </div>
+</div>
+
+<!-- ===================== 弹窗：证据链关系图 ===================== -->
+<div id="graphModal" class="modal hidden">
+  <div class="modal-box wide graph-box">
+    <div class="modal-head">
+      <h2 id="graphTitle">证据链关系图</h2>
+      <div>
+        <button id="btnGraphMerge" class="btn ghost" title="进入合并模式：依次点击两条证据记录">合并重复</button>
+        <button class="modal-x btn ghost" data-close>关闭</button>
+      </div>
+    </div>
+    <div class="graph-toolbar">
+      <button id="btnAddClaim" class="btn small">＋ 候选结论</button>
+      <button id="btnExpandGraph" class="btn small ghost">展开推导依据</button>
+      <button id="btnResetView" class="btn small ghost">复位视图</button>
+      <span class="hint" id="graphHint">从证据节点拖线到结论节点建立「支持」；按住 Alt 拖线为「反驳」。点对象节点可反向定位画布。</span>
+    </div>
+    <div class="modal-body graph-body" id="graphBody"></div>
+  </div>
+</div>
+
+<!-- ===================== 弹窗：通用确认/预览 ===================== -->
+<div id="miniModal" class="modal hidden">
+  <div class="modal-box mini-box">
+    <div class="modal-head">
+      <h2 id="miniTitle">确认</h2>
+      <button class="modal-x" data-close>×</button>
+    </div>
+    <div class="modal-body" id="miniBody"></div>
+    <div class="modal-foot" id="miniFoot"></div>
   </div>
 </div>
 

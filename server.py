@@ -263,6 +263,9 @@ def new_document():
         "leaves": [],
         "pairs": [],
         "quires": [],
+        "evidences": [],
+        "claims": [],
+        "links": [],
         "notes": "",
     }
 
@@ -276,8 +279,11 @@ def normalize_document(data):
     data.setdefault("leaves", [])
     data.setdefault("pairs", [])
     data.setdefault("quires", [])
+    data.setdefault("evidences", [])
+    data.setdefault("claims", [])
+    data.setdefault("links", [])
     data.setdefault("notes", "")
-    for key in ("leaves", "pairs", "quires"):
+    for key in ("leaves", "pairs", "quires", "evidences", "claims", "links"):
         if not isinstance(data[key], list):
             data[key] = []
     for lf in data["leaves"]:
@@ -294,6 +300,26 @@ def normalize_document(data):
         if isinstance(q, dict):
             q.setdefault("locked", False)
             q.setdefault("leaves", [])
+    for ev in data["evidences"]:
+        if isinstance(ev, dict):
+            ev.setdefault("subjects", [])
+            ev.setdefault("status", "pending")
+            ev.setdefault("credibility", "medium")
+            ev.setdefault("source", "")
+            ev.setdefault("basis", [])
+            ev.setdefault("archived", False)
+            ev.setdefault("mergedInto", None)
+            ev.setdefault("history", [])
+    for cl in data["claims"]:
+        if isinstance(cl, dict):
+            cl.setdefault("kind", "note")
+            cl.setdefault("label", "")
+            cl.setdefault("note", "")
+            cl.setdefault("created_at", now_iso())
+    for lk in data["links"]:
+        if isinstance(lk, dict):
+            lk.setdefault("stance", "support")
+            lk.setdefault("created_at", now_iso())
     return data
 
 
