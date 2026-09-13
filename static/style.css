@@ -401,11 +401,13 @@ a.subj-chip.leaf:hover,a.subj-chip.pair:hover,a.subj-chip.quire:hover{background
 /* ---------------- 关系图弹窗 ---------------- */
 .graph-box{width:94vw;max-width:1200px}
 .graph-body{position:relative;padding:0;height:68vh;overflow:hidden;background:#f7f2e7}
+.graph-scroll{position:absolute;top:34px;left:0;right:0;bottom:0;overflow-y:auto;overflow-x:hidden}
+.graph-scroll.dragging{cursor:grabbing}
 .graph-toolbar{display:flex;gap:8px;align-items:center;padding:6px 14px;border-bottom:1px solid var(--line);
   flex-wrap:wrap;background:#fffdf7}
 .graph-toolbar .btn{color:var(--ink);background:#eee4d0;border-color:var(--line)}
 .graph-toolbar .btn.ghost{background:transparent;color:var(--accent)}
-#graphSvg{display:block;width:100%;height:100%;cursor:grab}
+#graphSvg{display:block;width:100%;height:auto;min-height:100%}
 .gnode rect{fill:#fffdf7;stroke:var(--line);stroke-width:1.2;filter:drop-shadow(0 1px 2px rgba(60,40,20,.15))}
 .gnode.g-object rect{fill:#eef3f0;stroke:#9db3a6}
 .gnode.g-pair rect{fill:#f6efe1;stroke:var(--accent-soft)}

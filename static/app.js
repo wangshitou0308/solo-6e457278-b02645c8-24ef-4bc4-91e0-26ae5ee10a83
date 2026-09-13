@@ -1345,9 +1345,8 @@ function openMini({ title, body, actions }) {
    证据链关系图（SVG：证据节点 / 结论节点 / 对象节点，力导向）
    ============================================================ */
 const graph = {
-  nodes: [], edges: [], pos: new Map(), sim: null,
+  nodes: [], edges: [], pos: new Map(),
   transform: { x: 0, y: 0, k: 1 },
-  dragNode: null, panning: null, tempLink: null, selEdge: null,
   mergePicked: [],
 };
 
@@ -1356,10 +1355,14 @@ function openGraph(scope) {
   state.graphExpand = false;
   state.graphMerge = false;
   graph.mergePicked = [];
+  graph.transform = { x: 0, y: 0, k: 1 };
+  graphPointer.mode = null; graphPointer.node = null; graphPointer.start = null; graphPointer.moved = false;
   buildGraphData();
   $("#graphModal").classList.remove("hidden");
   renderGraphFrame();
-  runLayout(true);
+  runLayout();
+  const sc = $("#graphScroll");
+  if (sc) sc.scrollTop = 0;
 }
 
 /* 计算图范围与节点边集合 */
@@ -1515,70 +1518,59 @@ function buildGraphData() {
   $("#graphTitle").textContent = "证据链关系图" + (titles.length ? " · " + titles[0] : "（全部记录）");
 }
 
-/* 三列初始布局 + 力导向 */
-function runLayout(initial) {
-  const W = Math.max(900, graph.nodes.length * 120 + 200);
-  const H = Math.max(520, graph.nodes.length * 60 + 120);
-  graph.W = W; graph.H = H;
+/* 固定三列布局：对象 — 证据 — 结论。
+   逻辑宽度恒定（1200），避免节点增多时 viewBox 膨胀被整体缩没；
+   列内等距分布、纵向居中，相邻列按邻接重心排序以减少连线交叉。 */
+const GRAPH_W = 1200;
+const GRAPH_COL_X = { object: 150, evidence: 600, claim: 1050 };
+const GRAPH_STEP = 80;
+function runLayout() {
   const cols = { object: [], evidence: [], claim: [] };
   graph.nodes.forEach((n) => cols[n.ntype].push(n));
-  const placeCol = (arr, x) => {
-    arr.forEach((n, i) => {
-      const y = 80 + i * 92 + (n.ntype === "evidence" && i % 2 ? 30 : 0);
-      if (initial || !graph.pos.has(n.id)) graph.pos.set(n.id, { x, y: Math.min(y, H - 60) });
-    });
-  };
-  placeCol(cols.object, 150);
-  placeCol(cols.evidence, W / 2);
-  placeCol(cols.claim, W - 170);
-  simulate();
-  drawGraph();
-}
 
-function simulate(iterations = 240) {
-  const pos = graph.pos, nodes = graph.nodes;
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const k = 150;
-  for (let it = 0; it < iterations; it++) {
-    const disp = new Map(nodes.map((n) => [n.id, { x: 0, y: 0 }]));
-    // 斥力
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = pos.get(nodes[i].id), b = pos.get(nodes[j].id);
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let d2 = dx * dx + dy * dy; if (d2 < 0.01) { d2 = 0.01; dx = 0.1; }
-        const d = Math.sqrt(d2), f = (k * k) / d;
-        const ux = dx / d, uy = dy / d;
-        disp.get(nodes[i].id).x += ux * f; disp.get(nodes[i].id).y += uy * f;
-        disp.get(nodes[j].id).x -= ux * f; disp.get(nodes[j].id).y -= uy * f;
-      }
-    }
-    // 弹力（沿边）
+  // 初始：证据按标题稳定排序；对象保持插入顺序（叶/双叶/帖），结论保持生成顺序
+  cols.evidence.sort((a, b) => a.label.localeCompare(b.label, "zh"));
+
+  const rankOf = (n, col) => {
+    const arr = cols[col];
+    return arr.indexOf(n);
+  };
+  const avgNeighborRank = (n, neighborCols) => {
+    const rs = [];
     graph.edges.forEach((e) => {
-      const a = pos.get(e.from), b = pos.get(e.to);
-      if (!a || !b) return;
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy));
-      const rest = e.kind === "basis" ? 130 : 120;
-      const f = (d * d) / (rest * k) * 0.6;
-      const ux = dx / d * f, uy = dy / d * f;
-      disp.get(e.from).x += ux; disp.get(e.from).y += uy;
-      disp.get(e.to).x -= ux; disp.get(e.to).y -= uy;
+      let other = null;
+      if (e.from === n.id && neighborCols.includes(ntypeOf(e.to))) other = e.to;
+      else if (e.to === n.id && neighborCols.includes(ntypeOf(e.from))) other = e.from;
+      if (other != null) {
+        const on = graph.nodes.find((x) => x.id === other);
+        if (on) rs.push(cols[on.ntype].indexOf(on));
+      }
     });
-    // 列向重力：保持对象-证据-结论三列
-    nodes.forEach((n) => {
-      const p = disp.get(n.id), q = pos.get(n.id);
-      const targetX = n.ntype === "object" ? 150 : n.ntype === "evidence" ? graph.W / 2 : graph.W - 170;
-      p.x += (targetX - q.x) * 0.02;
-      p.y += (graph.H / 2 - q.y) * 0.012;
-    });
-    const t = 1 - it / iterations * 0.7;
-    nodes.forEach((n) => {
-      if (graph.dragNode === n.id) return;
-      const p = pos.get(n.id), dd = disp.get(n.id);
-      p.x = Math.max(60, Math.min(graph.W - 60, p.x + dd.x * 0.02 * t));
-      p.y = Math.max(40, Math.min(graph.H - 40, p.y + dd.y * 0.02 * t));
-    });
+    return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 0;
+  };
+  const ntypeOf = (id) => graph.nodes.find((x) => x.id === id)?.ntype;
+
+  // 三轮重心排序：证据列依两侧、两侧再依证据列
+  for (let round = 0; round < 3; round++) {
+    cols.evidence.sort((a, b) =>
+      (avgNeighborRank(a, ["object", "claim"]) - avgNeighborRank(b, ["object", "claim"])) ||
+      a.label.localeCompare(b.label, "zh"));
+    cols.object.sort((a, b) =>
+      (avgNeighborRank(a, ["evidence"]) - avgNeighborRank(b, ["evidence"])) ||
+      a.label.localeCompare(b.label, "zh"));
+    cols.claim.sort((a, b) =>
+      (avgNeighborRank(a, ["evidence"]) - avgNeighborRank(b, ["evidence"])) ||
+      a.label.localeCompare(b.label, "zh"));
   }
+
+  const maxLen = Math.max(cols.object.length, cols.evidence.length, cols.claim.length, 4);
+  const H = Math.max(600, maxLen * GRAPH_STEP + 150);
+  graph.W = GRAPH_W; graph.H = H;
+  Object.entries(cols).forEach(([ntype, arr]) => {
+    const top = 64 + (maxLen - arr.length) * GRAPH_STEP / 2;
+    arr.forEach((n, i) => graph.pos.set(n.id, { x: GRAPH_COL_X[ntype], y: Math.round(top + i * GRAPH_STEP) }));
+  });
+  drawGraph();
 }
 
 function renderGraphFrame() {
@@ -1669,7 +1661,8 @@ function drawGraph() {
       <span class="muted">┄ 推导依据 / 关联</span>
       <span class="lg-flag">红框 = 冲突标记（互斥·悬空·循环）</span>
     </div>
-    <svg id="graphSvg" width="100%" height="100%" viewBox="0 0 ${graph.W} ${graph.H}" preserveAspectRatio="xMidYMid meet">
+    <div class="graph-scroll" id="graphScroll">
+      <svg id="graphSvg" width="100%" viewBox="0 0 ${graph.W} ${graph.H}" preserveAspectRatio="xMidYMin meet">
       <defs>
         <marker id="arrowSup" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
           <path d="M0,0 L10,5 L0,10 z" fill="#3e7d4f"/></marker>
@@ -1684,140 +1677,154 @@ function drawGraph() {
         ${labelLayer}
         <path id="tempLink" class="temp-link" d="" fill="none" style="display:none"/>
       </g>
-    </svg>`;
+    </svg>
+    </div>`;
   bindGraphEvents();
   applyWorld();
 }
 
-/* 交互状态：窗口级监听只注册一次，拖拽中只更新坐标、不重建 SVG */
+/* 交互状态：svg 级监听每次重绘绑到新 svg；窗口级拖拽监听只注册一次 */
 const graphPointer = { mode: null, node: null, start: null, moved: false, alt: false };
-let graphEventsBound = false;
+let graphWindowBound = false;
 function bindGraphEvents() {
   const svg = $("#graphSvg");
-  if (!graphEventsBound) {
-    svg.addEventListener("wheel", (e) => {
-      if ($("#graphModal").classList.contains("hidden")) return;
-      e.preventDefault();
-      const k = graph.transform.k * (e.deltaY < 0 ? 1.1 : 0.9);
-      graph.transform.k = Math.max(0.4, Math.min(2.2, k));
-      applyWorld();
-    }, { passive: false });
 
-    svg.addEventListener("mousedown", (e) => {
-      const ng = e.target.closest("[data-node]");
-      if (ng) {
-        const node = graph.nodes.find((n) => n.id === ng.dataset.node);
-        graphPointer.mode = e.altKey && node.ntype === "evidence" ? "link" : "node";
-        graphPointer.node = node;
-        graphPointer.start = { x: e.clientX, y: e.clientY,
-          nx: graph.pos.get(node.id).x, ny: graph.pos.get(node.id).y };
-        graphPointer.moved = false; graphPointer.alt = e.altKey;
-        e.preventDefault();
-        return;
-      }
-      if (e.target.closest("[data-edge]")) return; // click 监听里处理
-      graphPointer.mode = "pan";
-      graphPointer.start = { x: e.clientX, y: e.clientY, tx: graph.transform.x, ty: graph.transform.y };
-    });
+  /* svg 级：元素随 innerHTML 重建，必须每次重绘重新绑定 */
+  svg.addEventListener("wheel", (e) => {
+    if ($("#graphModal").classList.contains("hidden")) return;
+    e.preventDefault();
+    const k = graph.transform.k * (e.deltaY < 0 ? 1.1 : 0.9);
+    graph.transform.k = Math.max(0.4, Math.min(2.2, k));
+    applyWorld();
+  }, { passive: false });
 
-    window.addEventListener("mousemove", (e) => {
-      if ($("#graphModal").classList.contains("hidden")) return;
-      const gp = graphPointer;
-      if (!gp.mode || !gp.start) return;
-      const dx = e.clientX - gp.start.x, dy = e.clientY - gp.start.y;
-      if (gp.mode === "pan") {
-        graph.transform.x = gp.start.tx + dx;
-        graph.transform.y = gp.start.ty + dy;
-        applyWorld();
-        return;
-      }
-      if (Math.hypot(dx, dy) < 5) return;
-      gp.moved = true;
-      const pos = graph.pos.get(gp.node.id);
-      if (gp.mode === "link") {
-        const pt = clientToWorld(e.clientX, e.clientY);
-        const tl = $("#tempLink");
-        if (tl) {
-          tl.style.display = "";
-          tl.setAttribute("class", "temp-link " + (e.altKey ? "refute" : "support"));
-          tl.setAttribute("marker-end", "url(#arrow" + (e.altKey ? "Ref" : "Sup") + ")");
-          tl.setAttribute("d",
-            `M ${pos.x + 40} ${pos.y} Q ${(pos.x + pt.x) / 2} ${(pos.y + pt.y) / 2 - 30} ${pt.x} ${pt.y}`);
-        }
-      } else {
-        pos.x = Math.max(60, Math.min(graph.W - 60, gp.start.nx + dx / graph.transform.k));
-        pos.y = Math.max(40, Math.min(graph.H - 40, gp.start.ny + dy / graph.transform.k));
-        updateNodeTransform(gp.node.id, pos);
-        updateNodeEdges(gp.node.id);
-      }
-    });
-
-    window.addEventListener("mouseup", (e) => {
-      if ($("#graphModal").classList.contains("hidden")) return;
-      const gp = graphPointer;
-      if (!gp.mode) return;
-      const tl = $("#tempLink");
-      if (tl) tl.style.display = "none";
-      if (gp.mode === "node" || gp.mode === "link") {
-        if (!gp.moved) handleNodeClick(gp.node, e);
-        else if (gp.mode === "link") {
-          // Alt+拖线：证据节点拉线落到结论节点，建立支持（默认）/反驳（Alt）
-          const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
-          const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
-          if (tn && tn.id !== gp.node.id && tn.ntype === "claim")
-            beforeAddLink(gp.node.id, tn, e.altKey ? "refute" : "support");
-        } else if (gp.mode === "node" && gp.node.ntype === "evidence") {
-          // 普通拖动证据节点落到另一证据 = 添加推导依据
-          const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
-          const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
-          if (tn && tn.ntype === "evidence" && tn.id !== gp.node.id) {
-            const cur = evidenceById(gp.node.id).basis || [];
-            updateEvidence(gp.node.id, { basis: [...new Set([...cur, tn.id])] },
-              "添加推导依据：" + evidenceById(tn.id).title);
-          }
-        }
-      }
-      graphPointer.mode = null; graphPointer.node = null; graphPointer.start = null;
-    });
-
-    svg.addEventListener("dblclick", (e) => {
-      const ng = e.target.closest("[data-node]");
-      if (!ng) return;
+  svg.addEventListener("mousedown", (e) => {
+    const ng = e.target.closest("[data-node]");
+    if (ng) {
       const node = graph.nodes.find((n) => n.id === ng.dataset.node);
-      if (node.ntype === "evidence") {
-        $("#graphModal").classList.add("hidden");
-        state.chainEditing = node.id;
-        switchRightTab("chain");
-        renderChainTab();
-      } else if (node.ntype === "claim" && !node.system && !node.ghost) {
-        if (confirm("删除候选结论「" + node.label + "」？")) deleteUserClaim(node.id);
-      }
-    });
+      if (!node) return;
+      graphPointer.mode = e.altKey && node.ntype === "evidence" ? "link" : "node";
+      graphPointer.node = node;
+      graphPointer.start = { x: e.clientX, y: e.clientY,
+        nx: graph.pos.get(node.id).x, ny: graph.pos.get(node.id).y };
+      graphPointer.moved = false; graphPointer.alt = e.altKey;
+      e.preventDefault();
+      return;
+    }
+    if (e.target.closest("[data-edge]")) return; // click 监听里处理
+    graphPointer.mode = "pan";
+    graphPointer.node = null;
+    graphPointer.start = { x: e.clientX, y: e.clientY, tx: graph.transform.x,
+      sy: $("#graphScroll")?.scrollTop || 0 };
+    graphPointer.moved = false;
+  });
 
-    svg.addEventListener("click", (e) => {
-      const edgeEl = e.target.closest("[data-edge]");
-      if (!edgeEl) return;
-      const id = edgeEl.dataset.edge;
-      if (!id.startsWith("lk")) return;
-      const lk = state.doc.links.find((x) => x.id === id);
-      if (!lk) return;
-      const cl = state.chainAnalysis.claimsById.get(lk.target);
-      const fl = state.chainAnalysis.flags.link.get(id) || [];
-      openMini({
-        title: STANCE_LABEL[lk.stance] + "关系",
-        body: `<p>证据 <b>${esc(evidenceById(lk.evidence)?.title || "?")}</b>
-            ${lk.stance === "support" ? "支持" : "反驳"} <b>${esc(cl?.label || chainTargetLabel(state.doc, lk.target))}</b></p>
-          ${fl.length ? `<div class="mini-sub err">冲突标记</div><ul class="mini-list">
-            ${[...new Set(fl.map((f) => f.msg))].map((m) => `<li class="err">${esc(m)}</li>`).join("")}</ul>` : ""}
-          <p class="muted">冲突只标记、不改动结构。</p>`,
-        actions: [
-          { label: "关闭", ghost: true },
-          { label: "删除关系", danger: true, fn: () => deleteLink(id) },
-        ],
-      });
+  svg.addEventListener("dblclick", (e) => {
+    const ng = e.target.closest("[data-node]");
+    if (!ng) return;
+    const node = graph.nodes.find((n) => n.id === ng.dataset.node);
+    if (!node) return;
+    if (node.ntype === "evidence") {
+      $("#graphModal").classList.add("hidden");
+      state.chainEditing = node.id;
+      switchRightTab("chain");
+      renderChainTab();
+    } else if (node.ntype === "claim" && !node.system && !node.ghost) {
+      if (confirm("删除候选结论「" + node.label + "」？")) deleteUserClaim(node.id);
+    }
+  });
+
+  svg.addEventListener("click", (e) => {
+    if (graphPointer.moved) { graphPointer.moved = false; return; } // 拖拽收尾不触发点击
+    const edgeEl = e.target.closest("[data-edge]");
+    if (!edgeEl) return;
+    const id = edgeEl.dataset.edge;
+    if (!id.startsWith("lk")) return;
+    const lk = state.doc.links.find((x) => x.id === id);
+    if (!lk) return;
+    const cl = state.chainAnalysis.claimsById.get(lk.target);
+    const fl = state.chainAnalysis.flags.link.get(id) || [];
+    openMini({
+      title: STANCE_LABEL[lk.stance] + "关系",
+      body: `<p>证据 <b>${esc(evidenceById(lk.evidence)?.title || "?")}</b>
+          ${lk.stance === "support" ? "支持" : "反驳"} <b>${esc(cl?.label || chainTargetLabel(state.doc, lk.target))}</b></p>
+        ${fl.length ? `<div class="mini-sub err">冲突标记</div><ul class="mini-list">
+          ${[...new Set(fl.map((f) => f.msg))].map((m) => `<li class="err">${esc(m)}</li>`).join("")}</ul>` : ""}
+        <p class="muted">冲突只标记、不改动结构。</p>`,
+      actions: [
+        { label: "关闭", ghost: true },
+        { label: "删除关系", danger: true, fn: () => deleteLink(id) },
+      ],
     });
-    graphEventsBound = true;
-  }
+  });
+
+  /* 窗口级：只注册一次，通过当前 svg 取元素，重开弹窗依旧有效 */
+  if (graphWindowBound) return;
+  graphWindowBound = true;
+
+  window.addEventListener("mousemove", (e) => {
+    if ($("#graphModal").classList.contains("hidden")) return;
+    const gp = graphPointer;
+    if (!gp.mode || !gp.start) return;
+    const dx = e.clientX - gp.start.x, dy = e.clientY - gp.start.y;
+    if (gp.mode === "pan") {
+      graph.transform.x = gp.start.tx + dx;
+      const scroll = $("#graphScroll");
+      if (scroll) scroll.scrollTop = gp.start.sy - dy;
+      applyWorld();
+      return;
+    }
+    if (Math.hypot(dx, dy) < 5) return;
+    gp.moved = true;
+    const pos = graph.pos.get(gp.node.id);
+    if (!pos) return;
+    if (gp.mode === "link") {
+      const pt = clientToWorld(e.clientX, e.clientY);
+      const tl = $("#tempLink");
+      if (tl) {
+        tl.style.display = "";
+        tl.setAttribute("class", "temp-link " + (e.altKey ? "refute" : "support"));
+        tl.setAttribute("marker-end", "url(#arrow" + (e.altKey ? "Ref" : "Sup") + ")");
+        tl.setAttribute("d",
+          `M ${pos.x + 40} ${pos.y} Q ${(pos.x + pt.x) / 2} ${(pos.y + pt.y) / 2 - 30} ${pt.x} ${pt.y}`);
+      }
+    } else {
+      pos.x = GRAPH_COL_X[gp.node.ntype] ?? pos.x; // 节点保持在本列，只允许纵向拖动
+      pos.y = Math.max(30, Math.min(graph.H - 30, gp.start.ny + dy / graph.transform.k));
+      updateNodeTransform(gp.node.id, pos);
+      updateNodeEdges(gp.node.id);
+    }
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if ($("#graphModal").classList.contains("hidden")) return;
+    const gp = graphPointer;
+    if (!gp.mode) return;
+    const wasMoved = gp.moved;
+    const tl = $("#tempLink");
+    if (tl) tl.style.display = "none";
+    if ((gp.mode === "node" || gp.mode === "link") && gp.node) {
+      if (!wasMoved) {
+        handleNodeClick(gp.node, e);
+      } else if (gp.mode === "link") {
+        // Alt+拖线：证据节点拉线落到结论节点，建立支持（默认）/反驳（Alt）
+        const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
+        const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
+        if (tn && tn.id !== gp.node.id && tn.ntype === "claim")
+          beforeAddLink(gp.node.id, tn, e.altKey ? "refute" : "support");
+      } else if (gp.mode === "node" && gp.node.ntype === "evidence") {
+        // 普通拖动证据节点落到另一证据 = 添加推导依据
+        const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
+        const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
+        if (tn && tn.ntype === "evidence" && tn.id !== gp.node.id) {
+          const cur = evidenceById(gp.node.id).basis || [];
+          updateEvidence(gp.node.id, { basis: [...new Set([...cur, tn.id])] },
+            "添加推导依据：" + evidenceById(tn.id).title);
+        }
+      }
+    }
+    graphPointer.mode = null; graphPointer.node = null; graphPointer.start = null;
+  });
 }
 
 /* 拖拽中局部更新，避免整图重建造成元素被销毁 */
@@ -1845,16 +1852,15 @@ function applyWorld() {
   if (w) w.setAttribute("transform",
     `translate(${graph.transform.x},${graph.transform.y}) scale(${graph.transform.k})`);
 }
-/* 屏幕坐标 → 图内坐标：先经 meet 等比映射，再扣除平移/缩放 */
+/* 屏幕坐标 → 图内坐标：按宽度等比，扣除滚轮缩放/平移与滚动位置 */
 function clientToWorld(cx, cy) {
   const svg = $("#graphSvg");
+  const scroll = $("#graphScroll");
   const r = svg.getBoundingClientRect();
-  const base = Math.min(r.width / graph.W, r.height / graph.H);
-  const ox = (r.width - graph.W * base) / 2;
-  const oy = (r.height - graph.H * base) / 2;
+  const base = r.width / graph.W; // 宽度撑满，无 meet 居中偏移
   return {
-    x: (cx - r.left - ox - graph.transform.x) / (base * graph.transform.k),
-    y: (cy - r.top - oy - graph.transform.y) / (base * graph.transform.k),
+    x: (cx - r.left - graph.transform.x) / (base * graph.transform.k),
+    y: (cy - r.top - graph.transform.y + (scroll?.scrollTop || 0)) / (base * graph.transform.k),
   };
 }
 
@@ -1879,7 +1885,7 @@ function handleNodeClick(node, e) {
               mergeEvidence(keep, absorb);
               graph.mergePicked = [];
               state.graphMerge = false;
-              buildGraphData(); renderGraphFrame(); runLayout(false);
+              buildGraphData(); renderGraphFrame(); runLayout();
             } },
           ],
         });
@@ -1936,9 +1942,9 @@ function beforeAddLink(evId, targetNode, stance) {
 /* 工具栏 */
 $("#btnExpandGraph").onclick = () => {
   state.graphExpand = !state.graphExpand;
-  buildGraphData(); renderGraphFrame(); runLayout(true);
+  buildGraphData(); renderGraphFrame(); runLayout();
 };
-$("#btnResetView").onclick = () => { graph.transform = { x: 0, y: 0, k: 1 }; runLayout(true); applyWorld(); };
+$("#btnResetView").onclick = () => { graph.transform = { x: 0, y: 0, k: 1 }; runLayout(); applyWorld(); };
 $("#btnGraphMerge").onclick = () => {
   state.graphMerge = !state.graphMerge;
   graph.mergePicked = [];
@@ -1992,7 +1998,7 @@ $("#btnAddClaim").onclick = () => {
           claim = { kind: "note", text: $("#mcText").value || "未命名结论", note };
         }
         const id = addUserClaim(claim);
-        buildGraphData(); runLayout(true);
+        buildGraphData(); runLayout();
       } },
     ],
   });
@@ -2144,7 +2150,7 @@ function refreshOpenGraph() {
   const prev = graph.pos;
   buildGraphData();
   graph.pos = new Map([...graph.nodes.map((n) => [n.id, prev.get(n.id)])].filter(([, p]) => p));
-  runLayout(false);
+  runLayout();
 }
 
 function renderLegend() {
