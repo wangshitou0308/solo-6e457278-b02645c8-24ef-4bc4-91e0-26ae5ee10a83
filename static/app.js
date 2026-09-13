@@ -1578,7 +1578,7 @@ function renderGraphFrame() {
   $("#btnExpandGraph").classList.toggle("on-conf", state.graphExpand);
   const hint = state.graphMerge
     ? "合并模式：依次点击两条证据记录，后者将并入前者（关系迁移、旧记录归档保留版本）。"
-    : "从证据节点拖线到结论节点建立「支持」；按住 Alt 拖线为「反驳」。点对象节点反向定位画布。";
+    : "把证据节点直接拖到结论节点 = 建立「支持」；按住 Alt 拖 = 「反驳」；拖到另一证据 = 添加推导依据。点对象节点反向定位画布。";
   $("#graphHint").textContent = hint;
 }
 
@@ -1593,19 +1593,27 @@ function nodeHTML(n) {
   if (conflict) cls += " g-flag";
   if (state.graphMerge && n.ntype === "evidence") cls += " g-mergeable";
   if (graph.mergePicked.includes(n.id)) cls += " g-merge-pick";
+  // 注意：SVG 内部只能出现 SVG 元素。HTML 的 <span> 等属于“外来内容跳出标签”，
+  // 会让解析器退出 SVG 命名空间，导致后续节点全部损坏——徽标一律用 <tspan>。
   const badges = [];
+  const sep = () => `<tspan class="gn-sep" dx="4"></tspan>`;
   if (n.ntype === "evidence") {
-    badges.push(`<span class="gn-kind k-${n.kind}">${EV_TYPES[n.kind]?.icon || "他"}</span>`);
-    if (n.status === "confirmed") badges.push('<span class="gn-bad ok">确</span>');
-    else badges.push('<span class="gn-bad warn">疑</span>');
+    badges.push(`<tspan class="gn-kind k-${n.kind}">${esc(EV_TYPES[n.kind]?.icon || "他")}</tspan>`);
+    badges.push(sep());
+    badges.push(n.status === "confirmed"
+      ? '<tspan class="gn-bad ok">确</tspan>'
+      : '<tspan class="gn-bad warn">疑</tspan>');
   }
-  if (n.ntype === "claim") badges.push(n.system ? '<span class="gn-bad sys">现结构</span>' : '<span class="gn-bad cand">候选</span>');
-  if (conflict) badges.push('<span class="gn-bad err">!</span>');
-  if (n.dead) badges.push('<span class="gn-bad dead">悬空</span>');
-  return `<g class="${cls}" data-node="${n.id}" transform="translate(${p.x},${p.y})" style="cursor:${n.ntype === "evidence" && state.graphMerge ? "pointer" : "grab"}">
+  if (n.ntype === "claim") {
+    badges.push(n.system ? '<tspan class="gn-bad sys">现结构</tspan>' : '<tspan class="gn-bad cand">候选</tspan>');
+  }
+  if (conflict) { badges.push(sep()); badges.push('<tspan class="gn-bad err">!</tspan>'); }
+  if (n.dead) { badges.push(sep()); badges.push('<tspan class="gn-bad dead">悬空</tspan>'); }
+  const cursor = n.ntype === "evidence" && state.graphMerge ? "pointer" : "grab";
+  return `<g class="${cls}" data-node="${n.id}" transform="translate(${p.x},${p.y})" style="cursor:${cursor}">
     <rect x="-70" y="-22" width="140" height="44" rx="6"></rect>
     <text class="gn-label" x="0" y="-3" text-anchor="middle">${esc(n.label).slice(0, 26)}</text>
-    <text class="gn-sub" x="0" y="13" text-anchor="middle">${badges.join(" ")}</text>
+    <text class="gn-sub" x="0" y="13" text-anchor="middle">${badges.join("")}</text>
   </g>`;
 }
 
@@ -1684,7 +1692,7 @@ function drawGraph() {
 }
 
 /* 交互状态：svg 级监听每次重绘绑到新 svg；窗口级拖拽监听只注册一次 */
-const graphPointer = { mode: null, node: null, start: null, moved: false, alt: false };
+const graphPointer = { mode: null, node: null, start: null, moved: false, alt: false, linkHover: null };
 let graphWindowBound = false;
 function bindGraphEvents() {
   const svg = $("#graphSvg");
@@ -1703,7 +1711,8 @@ function bindGraphEvents() {
     if (ng) {
       const node = graph.nodes.find((n) => n.id === ng.dataset.node);
       if (!node) return;
-      graphPointer.mode = e.altKey && node.ntype === "evidence" ? "link" : "node";
+      // 单一拖拽模式：移动节点或拉线由落点决定；Alt 表示想要“反驳”
+      graphPointer.mode = "node";
       graphPointer.node = node;
       graphPointer.start = { x: e.clientX, y: e.clientY,
         nx: graph.pos.get(node.id).x, ny: graph.pos.get(node.id).y };
@@ -1778,18 +1787,32 @@ function bindGraphEvents() {
     gp.moved = true;
     const pos = graph.pos.get(gp.node.id);
     if (!pos) return;
-    if (gp.mode === "link") {
+    if (gp.node.ntype === "evidence") {
+      // 证据拖动：悬停在结论节点上时显示临时连线（支持绿/反驳红），否则移动本节点
+      const hoverEl = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
+      const hoverNode = hoverEl ? graph.nodes.find((n) => n.id === hoverEl.dataset.node) : null;
       const pt = clientToWorld(e.clientX, e.clientY);
       const tl = $("#tempLink");
-      if (tl) {
-        tl.style.display = "";
-        tl.setAttribute("class", "temp-link " + (e.altKey ? "refute" : "support"));
-        tl.setAttribute("marker-end", "url(#arrow" + (e.altKey ? "Ref" : "Sup") + ")");
-        tl.setAttribute("d",
-          `M ${pos.x + 40} ${pos.y} Q ${(pos.x + pt.x) / 2} ${(pos.y + pt.y) / 2 - 30} ${pt.x} ${pt.y}`);
+      if (hoverNode && hoverNode.ntype === "claim" && hoverNode.id !== gp.node.id) {
+        gp.linkHover = hoverNode.id;
+        const refute = e.altKey;
+        if (tl) {
+          tl.style.display = "";
+          tl.setAttribute("class", "temp-link " + (refute ? "refute" : "support"));
+          tl.setAttribute("marker-end", "url(#arrow" + (refute ? "Ref" : "Sup") + ")");
+          tl.setAttribute("d",
+            `M ${pos.x + 62} ${pos.y} Q ${(pos.x + 62 + pt.x) / 2} ${(pos.y + pt.y) / 2 - 26} ${pt.x - 24} ${pt.y}`);
+        }
+      } else {
+        gp.linkHover = null;
+        if (tl) tl.style.display = "none";
+        pos.x = GRAPH_COL_X.evidence; // 证据保持本列，只允许纵向拖动
+        pos.y = Math.max(30, Math.min(graph.H - 30, gp.start.ny + dy / graph.transform.k));
+        updateNodeTransform(gp.node.id, pos);
+        updateNodeEdges(gp.node.id);
       }
     } else {
-      pos.x = GRAPH_COL_X[gp.node.ntype] ?? pos.x; // 节点保持在本列，只允许纵向拖动
+      pos.x = GRAPH_COL_X[gp.node.ntype] ?? pos.x; // 非证据节点保持在本列，只纵向拖动
       pos.y = Math.max(30, Math.min(graph.H - 30, gp.start.ny + dy / graph.transform.k));
       updateNodeTransform(gp.node.id, pos);
       updateNodeEdges(gp.node.id);
@@ -1803,25 +1826,23 @@ function bindGraphEvents() {
     const wasMoved = gp.moved;
     const tl = $("#tempLink");
     if (tl) tl.style.display = "none";
-    if ((gp.mode === "node" || gp.mode === "link") && gp.node) {
+    if (gp.node) {
       if (!wasMoved) {
         handleNodeClick(gp.node, e);
-      } else if (gp.mode === "link") {
-        // Alt+拖线：证据节点拉线落到结论节点，建立支持（默认）/反驳（Alt）
+      } else if (gp.node.ntype === "evidence") {
+        // 拖到结论 = 支持（默认）/反驳（Alt）；拖到另一证据 = 添加推导依据
         const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
         const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
-        if (tn && tn.id !== gp.node.id && tn.ntype === "claim")
-          beforeAddLink(gp.node.id, tn, e.altKey ? "refute" : "support");
-      } else if (gp.mode === "node" && gp.node.ntype === "evidence") {
-        // 普通拖动证据节点落到另一证据 = 添加推导依据
-        const target = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-node]");
-        const tn = target ? graph.nodes.find((n) => n.id === target.dataset.node) : null;
-        if (tn && tn.ntype === "evidence" && tn.id !== gp.node.id) {
-          const cur = evidenceById(gp.node.id).basis || [];
-          updateEvidence(gp.node.id, { basis: [...new Set([...cur, tn.id])] },
-            "添加推导依据：" + evidenceById(tn.id).title);
+        if (tn && tn.id !== gp.node.id) {
+          if (tn.ntype === "claim") beforeAddLink(gp.node.id, tn, e.altKey ? "refute" : "support");
+          else if (tn.ntype === "evidence") {
+            const cur = evidenceById(gp.node.id).basis || [];
+            updateEvidence(gp.node.id, { basis: [...new Set([...cur, tn.id])] },
+              "添加推导依据：" + evidenceById(tn.id).title);
+          }
         }
       }
+      gp.linkHover = null;
     }
     graphPointer.mode = null; graphPointer.node = null; graphPointer.start = null;
   });

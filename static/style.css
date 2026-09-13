@@ -425,7 +425,8 @@ a.subj-chip.leaf:hover,a.subj-chip.pair:hover,a.subj-chip.quire:hover{background
 .gnode:hover rect{stroke-width:2.2}
 .gn-label{font-size:11px;fill:var(--ink);font-family:"Songti SC",serif;pointer-events:none}
 .gn-sub{font-size:9px;pointer-events:none}
-.gn-kind{fill:var(--gold)}
+.gn-kind{fill:var(--gold);font-family:sans-serif;font-weight:700}
+.gn-sep{fill:transparent}
 .gn-bad{font-family:sans-serif;font-size:9px}
 .gn-bad.ok{fill:var(--ok)} .gn-bad.warn{fill:var(--warn)}
 .gn-bad.err{fill:var(--err);font-weight:700} .gn-bad.dead{fill:var(--err)}
